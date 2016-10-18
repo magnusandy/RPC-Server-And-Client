@@ -4,7 +4,6 @@ import "net"
 import "fmt"
 import "./myUtils"
 import "time"
-import "strings"
 import "strconv"
 import "net/rpc"
 import "errors"
@@ -21,7 +20,8 @@ const CLIENT_JOINED_ROOM_MESSAGE string = "CLIENT HAS JOINED THE ROOM";
 const MAX_CLIENTS int = 10;
 const DAY_DURATION time.Duration = 24*time.Hour;
 const ROOM_DURATION_DAYS time.Duration = 7*DAY_DURATION;
-const TIMEOUT_DURATION time.Duration = 2*time.Minute;
+const TIMEOUT_DURATION time.Duration = 15*time.Second;
+const TIMEOUT_MESSAGE string = "TIMEOUT";
 
 
 //COMMANDS
@@ -167,6 +167,7 @@ type Client struct
   currentRoom *Room;
   outputChannel chan string;
   name string;
+  lastAccessTime time.Time;
 }
 
 func getClientByName(clientName string) *Client{
@@ -188,19 +189,34 @@ func addClient() string{
     currentRoom: nil, //starts as nil because the user is not initally in a room
     outputChannel: createOutputChannel,
     name: createName,
+    lastAccessTime: time.Now(),//sets the currentTime on the client, if difference between last access time andd now is > TIMEOUT_DURATION, then Timeclient
   }
   ClientArray = append(ClientArray, &cli);
+  go cli.watchForTimeout();
   return cli.name
+}
+
+//this function loops and checks if the user has been active in the last TIMEOUT_DURATION if not, boot the user
+func (cli *Client) watchForTimeout(){
+  for time.Since(cli.lastAccessTime) < TIMEOUT_DURATION{
+  //do nothing, the client is active
+  }
+  processTimeout(cli)
+}
+
+func (cli *Client) updateLastUsedTime(){
+  cli.lastAccessTime = time.Now();
 }
 //adds message to the clients output channel, messages should be single line, NON delimited strings, that is the message should not include a new line
 //the name of the sender will be added to the message to form a final message in the form of "sender says: message\n"
-func (cli Client) messageClientFromClient(message string, sender *Client){
+func (cli *Client) messageClientFromClient(message string, sender *Client){
   message = string(sender.name)+" says: "+message+"\n";
+  fmt.Println("we here")
   cli.outputChannel <- message;
 }
 
 //without a client argument assumes the message is coming from the server
-func (cli Client) messageClientFromServer(message string){
+func (cli *Client) messageClientFromServer(message string){
   message = "Server says: "+message+"\n";
   cli.outputChannel <- message;
 }
@@ -225,7 +241,7 @@ func (cli *Client)removeClientFromCurrentRoom(){
 }
 
 
-//This function will remove the client from the Client Array, this function is intended to be used as part of the processQuitCommand
+//This function will remove the client from the Client Array, this function is intended to be used as part of the processQuitCommandHelper
 func (client *Client)removeClientFromSystem(){
   //finds the client and removes them from the ClientArray
   for i,systemClients := range ClientArray{
@@ -240,6 +256,7 @@ func (client *Client)removeClientFromSystem(){
 //wrapper for the internal function of the same name so that it can be used internally as well as by the client
 func (server *Server)SendMessageToCurrentRoom(args *DoubleArgs, reply *string) error{
   sender := getClientByName(args.Arg1);
+  sender.updateLastUsedTime();
   message := args.Arg2;
   sendMessageToCurrentRoom(sender, message);
   return nil;
@@ -248,72 +265,28 @@ func (server *Server)SendMessageToCurrentRoom(args *DoubleArgs, reply *string) e
 
 //sends a message to the clients current room, this function will replacee the WriteToAllChans function which sends a message to every client on the server
 func sendMessageToCurrentRoom(sender *Client, message string){
-//check if the client is currently in a room warn otherwise
-if sender.currentRoom == nil {
-  //sender is not in room yet warn and exit
-  sender.messageClientFromServer(NOT_IN_ROOM_ERR);
-  return;
-}
-//get the current room and its list of clients
-//send the message to everyone in the room list that is CURRENTLY in the room
-room := sender.currentRoom;
-chatMessage := createChatMessage(sender, message);
-fmt.Println("current room UserArray: ")
-fmt.Println(room.clientList)
-fmt.Println(room.clientList[0].currentRoom)
-for _, roomUser := range room.clientList {
-  fmt.Println("looping room array user is: "+roomUser.name)
-  //check to see if the user is currently active in the room
-  if ((roomUser.currentRoom.name == room.name)) {
-    roomUser.messageClientFromClient(chatMessage.message, chatMessage.client)
+  //check if the client is currently in a room warn otherwise
+  if sender.currentRoom == nil {
+    //sender is not in room yet warn and exit
+    sender.messageClientFromServer(NOT_IN_ROOM_ERR);
+    return;
   }
-}
-//save the message into the array of the rooms messages
-room.chatLog = append(room.chatLog, chatMessage);
-}
-
-/*
-Checks if the line sent from the user includes a command
-Commands will be in the form of /Command arg
-this function will first check if the FIRST character of the clients string is a /,
-if it is then it will attempt to parse and execute the command.
-*/
-func checkForCommand(message string, client *Client) {
-  message = strings.TrimSpace(message);//strips the newlines from the string
-  isCommand := strings.HasPrefix(message, COMMAND_PREFIX);//checks to see if the line starts with /
-  if(isCommand){
-    //parse command line, commands should be in the exact form of "/command arg arg arg" where args are not required
-    parsedCommand := strings.Split(message, " ")
-    if parsedCommand[0] == HELP_COMMAND {
-
-    } else if parsedCommand[0] == QUIT_COMMAND {
-    //  processQuitCommand(client);
-    } else if parsedCommand[0] == CREATE_ROOM_COMMAND {
-      // not enough arguments to the command
-      if len(parsedCommand) < 2{
-        client.messageClientFromServer(NO_ROOM_NAME_GIVEN_ERR)
-      }else{
-        //processCreateRoomCommand(client, parsedCommand[1]);
-      }
-    } else if parsedCommand[0] == LIST_ROOMS_COMMAND {
-    } else if parsedCommand[0] == JOIN_ROOM_COMMAND {
-      //not enough given to the command
-      if len(parsedCommand) < 2{
-        client.messageClientFromServer(NO_ROOM_NAME_GIVEN_ERR)
-      }else{
-      //  processJoinRoomCommand(client, parsedCommand[1]);
-      }
-    } else if parsedCommand[0] == CURR_ROOM_COMMAND {
-      //processCurrRoomCommand(client);
-    }else if parsedCommand[0] == CURR_ROOM_USERS_COMMAND{
-      //processCurrRoomUsersCommand(client);
-    }else if parsedCommand[0] == LEAVE_ROOM_COMMAND{
-    //  processLeaveRoomCommand(client)
+  //get the current room and its list of clients
+  //send the message to everyone in the room list that is CURRENTLY in the room
+  room := sender.currentRoom;
+  chatMessage := createChatMessage(sender, message);
+  fmt.Println("current room UserArray: ")
+  fmt.Println(room.clientList)
+  fmt.Println(room.clientList[0].currentRoom)
+  for _, roomUser := range room.clientList {
+    fmt.Println("looping room array user is: "+roomUser.name)
+    //check to see if the user is currently active in the room
+    if ((roomUser.currentRoom.name == room.name)) {
+      go roomUser.messageClientFromClient(chatMessage.message, chatMessage.client)
     }
-
-  } else { // message is not a command
-    //sendMessageToCurrentRoom(client, message);
   }
+  //save the message into the array of the rooms messages
+  room.chatLog = append(room.chatLog, chatMessage);
 }
 
 
@@ -329,7 +302,7 @@ type DoubleArgs struct{
 }
 
 //the client must call this one time, it will set the client up on the server and send the server back their unique name
-func (t *Server) ConnectMe(name string, userNameReply *string) error {
+func (t *Server)Connect(name string, userNameReply *string) error {
     if len(ClientArray) < MAX_CLIENTS{//server can have more clients
       *userNameReply = addClient();
       return nil;
@@ -339,15 +312,22 @@ func (t *Server) ConnectMe(name string, userNameReply *string) error {
 }
 
 
+//passes the latest message on the clients output channel to the client
 func (server *Server) MessageClient(clientName string, reply *string) error {
 cli := getClientByName(clientName);
+fmt.Println("hoboutere"+clientName)
 *reply = <-cli.outputChannel;
+fmt.Println("hoboutere2"+clientName)
+if (*reply == TIMEOUT_MESSAGE){
+  return errors.New("You have timed out")
+}
 return nil;
 }
 
 //creates a room and logs to the console
-func (server *Server) ServerProcessCreateRoomCommand(c *DoubleArgs, reply *string) error {
+func (server *Server)ProcessCreateRoomCommand(c *DoubleArgs, reply *string) error {
   client := getClientByName(c.Arg1);
+  client.updateLastUsedTime();
   roomName := c.Arg2;
   room := createRoom(roomName, client);
   if room == nil { //name of room was not unique
@@ -359,6 +339,7 @@ func (server *Server) ServerProcessCreateRoomCommand(c *DoubleArgs, reply *strin
 
 func (server *Server)ProcessLeaveRoomCommand(clientName string, reply *string) error{
   client := getClientByName(clientName);
+  client.updateLastUsedTime();
   client.removeClientFromCurrentRoom();
   client.messageClientFromServer("You have left the room.")
   return nil
@@ -368,6 +349,7 @@ func (server *Server)ProcessLeaveRoomCommand(clientName string, reply *string) e
 func (server *Server)ProcessCurrRoomUsersCommand(clientName string, reply *string) error{
   //check if the user is in a room
   client := getClientByName(clientName);
+  client.updateLastUsedTime();
   if client.currentRoom == nil{
     client.messageClientFromServer(NOT_IN_ROOM_ERR)
     return nil
@@ -381,8 +363,9 @@ func (server *Server)ProcessCurrRoomUsersCommand(clientName string, reply *strin
 
 
 //sends a message to the client telling them which room they are currently in, if not in a room, inform the user
- func (server *Server)ProcessCurrRoomCommand (clientName string, reply *string) error{
+ func (server *Server)ProcessCurrRoomCommand(clientName string, reply *string) error{
    client := getClientByName(clientName);
+   client.updateLastUsedTime();
    if client.currentRoom == nil{
      client.messageClientFromServer(NOT_IN_ROOM_ERR)
      return nil
@@ -394,35 +377,37 @@ func (server *Server)ProcessCurrRoomUsersCommand(clientName string, reply *strin
 //Loops through the HELP_INFO array and sends all the lines of help info to the user
 func (server *Server)ProcessHelpCommand(clientName string, reply *string) error{
        client := getClientByName(clientName);
+       client.updateLastUsedTime();
        for _, helpLine := range HELP_INFO{
          client.messageClientFromServer(helpLine);
        }
-       //TODO error
        return nil
 }
 
 //because processQuit is used elseware we are wrapping it in a serveer version
 func (server *Server)ProcessQuitCommand(clientName string, reply *string) error{
   client := getClientByName(clientName);
-  processQuitCommand(client);
+  client.updateLastUsedTime();
+  processQuitCommandHelper(client);
   return nil;
 }
 //quits the client from the server
-func processQuitCommand(client *Client){
+func processQuitCommandHelper(client *Client){
   client.removeClientFromCurrentRoom();
   client.removeClientFromSystem();
 }
 
-//TODO put this soemwhere
+
 func processTimeout(client *Client){
-  defer processQuitCommand(client)
-  client.messageClientFromServer("TIMEOUT")
-  time.Sleep(2*time.Second)
+  client.outputChannel <- TIMEOUT_MESSAGE;
+  fmt.Println(client.name+" timed out")
+   processQuitCommandHelper(client)
 }
 
 //sends the list of rooms to the client
 func (server *Server)ProcessListRoomsCommand(clientName string, reply *string) error{
   client := getClientByName(clientName);
+  client.updateLastUsedTime();
   client.messageClientFromServer("List of rooms:")
   for _, roomName := range RoomArray{
     client.messageClientFromServer(roomName.name);
@@ -434,6 +419,7 @@ func (server *Server)ProcessListRoomsCommand(clientName string, reply *string) e
 //returns true of the room was joined successfully, returns false if there was a problem like the room does not exist
 func (server *Server)ProcessJoinRoomCommand(args *DoubleArgs, reply *string) error{
   client := getClientByName(args.Arg1);
+  client.updateLastUsedTime();
   roomName := args.Arg2;
   roomToJoin := getRoomByName(roomName);
   if roomToJoin == nil{ //the room doesnt exist
