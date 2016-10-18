@@ -20,7 +20,7 @@ const CLIENT_JOINED_ROOM_MESSAGE string = "CLIENT HAS JOINED THE ROOM";
 const MAX_CLIENTS int = 10;
 const DAY_DURATION time.Duration = 24*time.Hour;
 const ROOM_DURATION_DAYS time.Duration = 7*DAY_DURATION;
-const TIMEOUT_DURATION time.Duration = 15*time.Second;
+const TIMEOUT_DURATION time.Duration = 2*time.Minute;
 const TIMEOUT_MESSAGE string = "TIMEOUT";
 
 
