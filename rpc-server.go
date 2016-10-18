@@ -2,12 +2,12 @@ package main
 
 import "net"
 import "fmt"
-import "bufio"
 import "./myUtils"
 import "time"
 import "strings"
 import "strconv"
 import "net/rpc"
+import "errors"
 //import "reflect"
 
 //CONSTANTS
@@ -45,7 +45,7 @@ var HELP_INFO = [...]string {"help and command info:",
  CURR_ROOM_USERS_COMMAND+": gives a you a list of users in a room",
  LEAVE_ROOM_COMMAND+" removes you from current room",
 }
-var ClientArray []Client;
+var ClientArray []*Client;
 var RoomArray []*Room;
 //STRUCTURES
 /*****************Rooms*****************/
@@ -95,6 +95,48 @@ func (room Room) isClientInRoom(client *Client) bool {
   }
   return false;
 }
+
+//checks to see if a room with the given name exists in the RoomArray, if it does return it, if not return nil
+func getRoomByName(roomName string) *Room{
+  for _, room := range RoomArray{
+    if room.name == roomName{
+      return room;
+    }
+  }
+  return nil;
+}
+
+//intended to be run continously on a thread, this function will look at the usage of rooms and if the room hasent been used for 7 days,
+// it will be closed. If a room has no active users and the last user left over 7 days ago the room will be closed. this function will check the room
+//status every minute
+func manageRooms(){
+  for{ //loop forever
+    for i, rooms := range RoomArray{
+      //for each room in the array we need to check if its been used, if not, remove it
+      sinceLastUsed := time.Since(rooms.lastUsedDate)
+      if len(rooms.clientList) == 0 && sinceLastUsed > ROOM_DURATION_DAYS{ //room is empty and time since use is longer than allowed duration
+        RoomArray = append(RoomArray[:i], RoomArray[i+1:]...)//deletes the element
+      }
+      //else don't do anything
+    }
+    time.Sleep(time.Minute)//sleep the loop to lower processing
+  }
+}
+
+//diplays to the user all the messages of the chatroom, intended to be used when a user first joins a room
+func displayRoomsMessages(client *Client, room *Room){
+  //loop through the chatlog and send the user everything
+  //just so the user doesnt get an empty message
+  if room.chatLog == nil{
+    return
+  }
+  client.messageClientFromServer("-----Previous Log-----")
+  for _, messages := range room.chatLog {
+    client.messageClientFromClient(messages.message, messages.client)
+  }
+  client.messageClientFromServer("----------------------")
+
+}
 /***************************************/
 
 /*****************MESSAGES*****************/
@@ -130,7 +172,7 @@ type Client struct
 func getClientByName(clientName string) *Client{
   for _, cli := range ClientArray{
     if cli.name == clientName{
-      return &cli;
+      return cli;
     }
   }
   return nil;
@@ -147,11 +189,9 @@ func addClient() string{
     outputChannel: createOutputChannel,
     name: createName,
   }
-  ClientArray = append(ClientArray, cli);
+  ClientArray = append(ClientArray, &cli);
   return cli.name
 }
-
-
 //adds message to the clients output channel, messages should be single line, NON delimited strings, that is the message should not include a new line
 //the name of the sender will be added to the message to form a final message in the form of "sender says: message\n"
 func (cli Client) messageClientFromClient(message string, sender *Client){
@@ -164,7 +204,47 @@ func (cli Client) messageClientFromServer(message string){
   message = "Server says: "+message+"\n";
   cli.outputChannel <- message;
 }
+
+//removes the client from his current room and takes the client out of the rooms list of users
+func (cli *Client)removeClientFromCurrentRoom(){
+//not in a current room so just return
+  if cli.currentRoom == nil {
+    return;
+  } else {
+    sendMessageToCurrentRoom(cli, CLIENT_LEFT_ROOM_MESSAGE)
+    cl := cli.currentRoom.clientList;
+    for i,roomClients := range cl{
+      if cli == roomClients {
+        cli.currentRoom.clientList = append(cl[:i], cl[i+1:]...)//deletes the element
+        cli.currentRoom.lastUsedDate = time.Now();
+      }
+    }
+    cli.currentRoom = nil;
+    return
+  }
+}
+
+
+//This function will remove the client from the Client Array, this function is intended to be used as part of the processQuitCommand
+func (client *Client)removeClientFromSystem(){
+  //finds the client and removes them from the ClientArray
+  for i,systemClients := range ClientArray{
+    if client.name == systemClients.name {
+      ClientArray = append(ClientArray[:i], ClientArray[i+1:]...)//deletes the element
+    }
+  }
+  fmt.Println("there are currently: "+strconv.Itoa(len(ClientArray))+" clients connected");
+}
 /**********************************/
+
+//wrapper for the internal function of the same name so that it can be used internally as well as by the client
+func (server *Server)SendMessageToCurrentRoom(args *DoubleArgs, reply *string) error{
+  sender := getClientByName(args.Arg1);
+  message := args.Arg2;
+  sendMessageToCurrentRoom(sender, message);
+  return nil;
+}
+
 
 //sends a message to the clients current room, this function will replacee the WriteToAllChans function which sends a message to every client on the server
 func sendMessageToCurrentRoom(sender *Client, message string){
@@ -180,6 +260,7 @@ room := sender.currentRoom;
 chatMessage := createChatMessage(sender, message);
 fmt.Println("current room UserArray: ")
 fmt.Println(room.clientList)
+fmt.Println(room.clientList[0].currentRoom)
 for _, roomUser := range room.clientList {
   fmt.Println("looping room array user is: "+roomUser.name)
   //check to see if the user is currently active in the room
@@ -206,33 +287,32 @@ func checkForCommand(message string, client *Client) {
     if parsedCommand[0] == HELP_COMMAND {
 
     } else if parsedCommand[0] == QUIT_COMMAND {
-      processQuitCommand(client);
+    //  processQuitCommand(client);
     } else if parsedCommand[0] == CREATE_ROOM_COMMAND {
       // not enough arguments to the command
       if len(parsedCommand) < 2{
         client.messageClientFromServer(NO_ROOM_NAME_GIVEN_ERR)
       }else{
-        processCreateRoomCommand(client, parsedCommand[1]);
+        //processCreateRoomCommand(client, parsedCommand[1]);
       }
     } else if parsedCommand[0] == LIST_ROOMS_COMMAND {
-      processListRoomsCommand(client);
     } else if parsedCommand[0] == JOIN_ROOM_COMMAND {
       //not enough given to the command
       if len(parsedCommand) < 2{
         client.messageClientFromServer(NO_ROOM_NAME_GIVEN_ERR)
       }else{
-        processJoinRoomCommand(client, parsedCommand[1]);
+      //  processJoinRoomCommand(client, parsedCommand[1]);
       }
     } else if parsedCommand[0] == CURR_ROOM_COMMAND {
-      processCurrRoomCommand(client);
+      //processCurrRoomCommand(client);
     }else if parsedCommand[0] == CURR_ROOM_USERS_COMMAND{
-      processCurrRoomUsersCommand(client);
+      //processCurrRoomUsersCommand(client);
     }else if parsedCommand[0] == LEAVE_ROOM_COMMAND{
-      processLeaveRoomCommand(client)
+    //  processLeaveRoomCommand(client)
     }
 
   } else { // message is not a command
-    sendMessageToCurrentRoom(client, message);
+    //sendMessageToCurrentRoom(client, message);
   }
 }
 
@@ -243,16 +323,21 @@ func checkForCommand(message string, client *Client) {
 
 type Server int;
 
-type CreateRoomArgs struct{
-  ClientName string;
-  RoomName string;
+type DoubleArgs struct{
+  Arg1 string;
+  Arg2 string;
 }
 
-
-func (t *Server) ConnectMe(name string, reply *string) error {
-  *reply = addClient();
-  return nil; //TODO errors
+//the client must call this one time, it will set the client up on the server and send the server back their unique name
+func (t *Server) ConnectMe(name string, userNameReply *string) error {
+    if len(ClientArray) < MAX_CLIENTS{//server can have more clients
+      *userNameReply = addClient();
+      return nil;
+    }else{
+      return errors.New("Server is currently full, try again later");
+    }
 }
+
 
 func (server *Server) MessageClient(clientName string, reply *string) error {
 cli := getClientByName(clientName);
@@ -261,9 +346,9 @@ return nil;
 }
 
 //creates a room and logs to the console
-func (server *Server) ServerProcessCreateRoomCommand(c *CreateRoomArgs, reply *string) error {
-  client := getClientByName(c.ClientName);
-  roomName := c.RoomName;
+func (server *Server) ServerProcessCreateRoomCommand(c *DoubleArgs, reply *string) error {
+  client := getClientByName(c.Arg1);
+  roomName := c.Arg2;
   room := createRoom(roomName, client);
   if room == nil { //name of room was not unique
     return nil
@@ -272,32 +357,38 @@ func (server *Server) ServerProcessCreateRoomCommand(c *CreateRoomArgs, reply *s
   return nil
 }
 
-func processLeaveRoomCommand(client *Client){
-  removeClientFromCurrentRoom(client);
+func (server *Server)ProcessLeaveRoomCommand(clientName string, reply *string) error{
+  client := getClientByName(clientName);
+  client.removeClientFromCurrentRoom();
   client.messageClientFromServer("You have left the room.")
+  return nil
 }
 
 //sends a list of the current users in the room to the client
-func processCurrRoomUsersCommand(client *Client){
+func (server *Server)ProcessCurrRoomUsersCommand(clientName string, reply *string) error{
   //check if the user is in a room
+  client := getClientByName(clientName);
   if client.currentRoom == nil{
     client.messageClientFromServer(NOT_IN_ROOM_ERR)
-    return
+    return nil
   }
   client.messageClientFromServer("Current users in "+client.currentRoom.name+" are:")
   for _, users:= range client.currentRoom.clientList {
     client.messageClientFromServer(users.name);
   }
+  return nil
 }
 
 
 //sends a message to the client telling them which room they are currently in, if not in a room, inform the user
- func processCurrRoomCommand (client *Client){
+ func (server *Server)ProcessCurrRoomCommand (clientName string, reply *string) error{
+   client := getClientByName(clientName);
    if client.currentRoom == nil{
      client.messageClientFromServer(NOT_IN_ROOM_ERR)
-     return
+     return nil
    }
    client.messageClientFromServer("current room: "+client.currentRoom.name);
+   return nil
  }
 
 //Loops through the HELP_INFO array and sends all the lines of help info to the user
@@ -310,155 +401,63 @@ func (server *Server)ProcessHelpCommand(clientName string, reply *string) error{
        return nil
 }
 
+//because processQuit is used elseware we are wrapping it in a serveer version
+func (server *Server)ProcessQuitCommand(clientName string, reply *string) error{
+  client := getClientByName(clientName);
+  processQuitCommand(client);
+  return nil;
+}
 //quits the client from the server
 func processQuitCommand(client *Client){
-  //client.messageClientFromServer("Goodbye");
-  removeClientFromCurrentRoom(client);
-  removeClientFromSystem(client);
+  client.removeClientFromCurrentRoom();
+  client.removeClientFromSystem();
 }
 
+//TODO put this soemwhere
 func processTimeout(client *Client){
   defer processQuitCommand(client)
   client.messageClientFromServer("TIMEOUT")
   time.Sleep(2*time.Second)
 }
 
-//This function will remove the client from the Client Array, this function is intended to be used as part of the processQuitCommand
-func removeClientFromSystem(client *Client){
-  //finds the client and removes them from the ClientArray
-  for i,systemClients := range ClientArray{
-    if client.name == systemClients.name {
-      ClientArray = append(ClientArray[:i], ClientArray[i+1:]...)//deletes the element
-    }
-  }
-  fmt.Println("there are currently: "+strconv.Itoa(len(ClientArray))+" clients connected");
-}
-
-//creates a room and logs to the console
-func processCreateRoomCommand(client *Client, roomName string){
-  room := createRoom(roomName, client);
-  if room == nil { //name of room was not unique
-    return
-  }
-  message := room.creator.name+" created a room called: "+room.name
-  fmt.Println(message)
-  client.messageClientFromServer(message)
-}
-
 //sends the list of rooms to the client
-func processListRoomsCommand(client *Client){
+func (server *Server)ProcessListRoomsCommand(clientName string, reply *string) error{
+  client := getClientByName(clientName);
   client.messageClientFromServer("List of rooms:")
   for _, roomName := range RoomArray{
     client.messageClientFromServer(roomName.name);
   }
   client.messageClientFromServer("");
+  return nil;
 }
 
 //returns true of the room was joined successfully, returns false if there was a problem like the room does not exist
-func processJoinRoomCommand(client *Client, roomName string) bool{
-  //start by checking if the room exists
+func (server *Server)ProcessJoinRoomCommand(args *DoubleArgs, reply *string) error{
+  client := getClientByName(args.Arg1);
+  roomName := args.Arg2;
   roomToJoin := getRoomByName(roomName);
   if roomToJoin == nil{ //the room doesnt exist
     fmt.Println(client.name+" tried to enter room: "+roomName+" which does not exist");
     client.messageClientFromServer("The room "+roomName+" does not exist")
-    return false;
+    return nil;
   }
   //Room exists so now we can join it.
   //check if user is already in the room
   //add user to room if not in it already
   if roomToJoin.isClientInRoom(client) {
-      //all good
-  } else {
-    removeClientFromCurrentRoom(client);
+      client.messageClientFromServer("You are already in that room")
+  } else {//join room and display all the rooms messages
+    client.removeClientFromCurrentRoom();
     roomToJoin.clientList = append(roomToJoin.clientList, client);// add client to the rooms list
+    //switch users current room to room
+    client.currentRoom = roomToJoin;
+    fmt.Println(client.name+" has joined room: "+client.currentRoom.name)
+    sendMessageToCurrentRoom(client, CLIENT_JOINED_ROOM_MESSAGE)
+    //display all messages in the room
+    displayRoomsMessages(client, roomToJoin)
   }
-  //switch users current room to room
-  client.currentRoom = roomToJoin;
-  fmt.Println(client.name+" has joined room: "+client.currentRoom.name)
-  sendMessageToCurrentRoom(client, CLIENT_JOINED_ROOM_MESSAGE)
-  //display all messages in the room
-  displayRoomsMessages(client, roomToJoin)
-  //
-  return true
+  return nil
 }
-
-func removeClientFromCurrentRoom(cli *Client){
-//not in a current room so just return
-  if cli.currentRoom == nil {
-    return;
-  } else {
-    sendMessageToCurrentRoom(cli, CLIENT_LEFT_ROOM_MESSAGE)
-    cl := cli.currentRoom.clientList;
-    for i,roomClients := range cl{
-      if cli == roomClients {
-        cli.currentRoom.clientList = append(cl[:i], cl[i+1:]...)//deletes the element
-        cli.currentRoom.lastUsedDate = time.Now();
-      }
-    }
-    cli.currentRoom = nil;
-    return
-  }
-
-}
-//diplays to the user all the messages of the chatroom, intended to be used when a user first joins a room
-func displayRoomsMessages(client *Client, room *Room){
-  //loop through the chatlog and send the user everything
-  //just so the user doesnt get an empty message
-  if room.chatLog == nil{
-    return
-  }
-  client.messageClientFromServer("-----Previous Log-----")
-  for _, messages := range room.chatLog {
-    client.messageClientFromClient(messages.message, messages.client)
-  }
-  client.messageClientFromServer("----------------------")
-
-}
-//checks to see if a room with the given name exists in the RoomArray, if it does return it, if not return nil
-func getRoomByName(roomName string) *Room{
-  for _, room := range RoomArray{
-    if room.name == roomName{
-      return room;
-    }
-  }
-  return nil;
-}
-
-//sends a message to the client connection "SERVER FULL" and then closes the connection
-func sendServerIsFullMessage(conn net.Conn){
-  writer := bufio.NewWriter(conn);
-
-  //send FULL Message to Client
-  _, error := writer.WriteString("SERVER FULL")
-  if error != nil{
-    fmt.Println(error)
-  }
-  //flushing is necessary, the writeString only takes in the string, the flush function pushes it out to the user
-  flushError := writer.Flush()
-  if flushError != nil {
-    fmt.Println(flushError)
-  }
-
-  conn.Close();
-}
-
-//intended to be run continously on a thread, this function will look at the usage of rooms and if the room hasent been used for 7 days,
-// it will be closed. If a room has no active users and the last user left over 7 days ago the room will be closed. this function will check the room
-//status every minute
-func manageRooms(){
-  for{ //loop forever
-    for i, rooms := range RoomArray{
-      //for each room in the array we need to check if its been used, if not, remove it
-      sinceLastUsed := time.Since(rooms.lastUsedDate)
-      if len(rooms.clientList) == 0 && sinceLastUsed > ROOM_DURATION_DAYS{ //room is empty and time since use is longer than allowed duration
-        RoomArray = append(RoomArray[:i], RoomArray[i+1:]...)//deletes the element
-      }
-      //else don't do anything
-    }
-    time.Sleep(time.Minute)//sleep the loop to lower processing
-  }
-}
-
 
 
 //Main function for starting the server, will open the server on the SERVER_IP and the SERVER_PORT
@@ -477,14 +476,4 @@ func main() {
   go manageRooms();//start the room manager
   rpc.Register(server);
   rpc.Accept(ln)
-  fmt.Println("here")
-
-  // run loop forever, accept connections when they come and add them to the connection array and then call the addClient function one
-  for {
-    conn, _ := ln.Accept();
-    if len(ClientArray) < MAX_CLIENTS{//server can have more clients
-    }else{
-      sendServerIsFullMessage(conn)
-    }
-  }
 }

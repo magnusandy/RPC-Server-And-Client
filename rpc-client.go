@@ -22,35 +22,34 @@ const CURR_ROOM_COMMAND string = COMMAND_PREFIX+"currentRoom";
 const CURR_ROOM_USERS_COMMAND string = COMMAND_PREFIX+"currentUsers";
 const LEAVE_ROOM_COMMAND string = COMMAND_PREFIX+"leaveRoom";
 
-//Handles the input sent back to the client from the server, simply writes it to the console
-//
+//continusly asks the server for input by calling the servers message function
 func getFromServer(conn *rpc.Client){
   for{
-    var message string;
-
+    var message string;//message for return, will be populated by the server
     err := conn.Call("Server.MessageClient",&myName, &message)
     if err != nil{
+      fmt.Println("Problem getting messages from the server")
       fmt.Println(err)
       return
     }
     fmt.Print(message)
   }
 }
-func checkForCommand(message string, clientName string) {
+
+
+type DoubleArgs struct{
+  Arg1 string;
+  Arg2 string;
 }
 
-type CreateRoomArgs struct{
-  ClientName string;
-  RoomName string;
-}
 //Handles user input, reads from stdin and then posts that line to the server
 func getfromUser(conn *rpc.Client){
     for{
       reader := bufio.NewReader(os.Stdin)
-      message, _ := reader.ReadString('\n')
+      message, _ := reader.ReadString('\n')//read from stdin till the next newline
       var reply string;
       var err error;
-      message = strings.TrimSpace(message);//strips the newlines from the string
+      message = strings.TrimSpace(message);//strips the newlines from the input
       isCommand := strings.HasPrefix(message, COMMAND_PREFIX);//checks to see if the line starts with /
       if(isCommand){
         //parse command line, commands should be in the exact form of "/command arg arg arg" where args are not required
@@ -58,36 +57,37 @@ func getfromUser(conn *rpc.Client){
         if parsedCommand[0] == HELP_COMMAND {
           err = conn.Call("Server.ProcessHelpCommand", &myName, &reply)
         } else if parsedCommand[0] == QUIT_COMMAND {
+          err = conn.Call("Server.ProcessQuitCommand", &myName, &reply)
           stayAlive = false;
         } else if parsedCommand[0] == CREATE_ROOM_COMMAND {
           // not enough arguments to the command
           if len(parsedCommand) < 2{
-            err = errors.New("not enough args for create")
+            err = errors.New("not enough args for create room")
           }else{
-            args := CreateRoomArgs{myName,parsedCommand[1]}
+            args := DoubleArgs{myName,parsedCommand[1]}
             err = conn.Call("Server.ServerProcessCreateRoomCommand", &args, &reply)
           }
         } else if parsedCommand[0] == LIST_ROOMS_COMMAND {
-          //processListRoomsCommand(client);
+          err = conn.Call("Server.ProcessListRoomsCommand", &myName, &reply)
         } else if parsedCommand[0] == JOIN_ROOM_COMMAND {
           //not enough given to the command
           if len(parsedCommand) < 2{
-            //client.messageClientFromServer(NO_ROOM_NAME_GIVEN_ERR)
+            err = errors.New("You must specify a room to join")
           }else{
-            //processJoinRoomCommand(client, parsedCommand[1]);
+            args := DoubleArgs{myName,parsedCommand[1]}
+            err = conn.Call("Server.ProcessJoinRoomCommand", &args, &reply);
           }
         } else if parsedCommand[0] == CURR_ROOM_COMMAND {
-          //processCurrRoomCommand(client);
+          err = conn.Call("Server.ProcessCurrRoomCommand", &myName, &reply)
         }else if parsedCommand[0] == CURR_ROOM_USERS_COMMAND{
-        //  processCurrRoomUsersCommand(client);
+          err = conn.Call("Server.ProcessCurrRoomCommand", &myName, &reply)
         }else if parsedCommand[0] == LEAVE_ROOM_COMMAND{
-        //  processLeaveRoomCommand(client)
+          err = conn.Call("Server.ProcessLeaveRoomCommand", &myName, &reply)
         }
 
       }else { // message is not a command
-      //  sendMessageToCurrentRoom(client, message);
-      }
-
+        args := DoubleArgs{myName,message}
+        err = conn.Call("Server.SendMessageToCurrentRoom", &args, &reply);      }
       if err != nil{
         fmt.Println(err)
       }
@@ -119,8 +119,12 @@ PORT = arguments[1]
     fmt.Println(err)
     return
   }
-
-  conn.Call("Server.ConnectMe", "", &myName)
+  //call the servers connect function, this will set the client up on the server and return the clients unique Username
+  connectErr := conn.Call("Server.ConnectMe", "", &myName)
+  if connectErr != nil{
+    fmt.Println(connectErr)
+    return
+  }
   fmt.Println("Your Username is: "+myName)
   go getfromUser(conn);
   go getFromServer(conn)
