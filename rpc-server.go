@@ -116,7 +116,8 @@ func manageRooms(){
       sinceLastUsed := time.Since(rooms.lastUsedDate)
       if len(rooms.clientList) == 0 && sinceLastUsed > ROOM_DURATION_DAYS{ //room is empty and time since use is longer than allowed duration
         RoomArray = append(RoomArray[:i], RoomArray[i+1:]...)//deletes the element
-      }
+        break //we want to jump out so as not to break
+	}
       //else don't do anything
     }
     time.Sleep(time.Minute)//sleep the loop to lower processing
@@ -461,5 +462,5 @@ func main() {
   server := new(Server);
   go manageRooms();//start the room manager
   rpc.Register(server);
-  rpc.Accept(ln)
+  rpc.Accept(ln)//continually waits on incomming commections
 }

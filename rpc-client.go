@@ -24,7 +24,7 @@ const LEAVE_ROOM_COMMAND string = COMMAND_PREFIX+"leaveRoom";
 
 //continusly asks the server for input by calling the servers message function
 func getFromServer(conn *rpc.Client){
-  for{
+  for stayAlive {
     var message string;//message for return, will be populated by the server
     err := conn.Call("Server.MessageClient",&myName, &message)
     if err != nil{
