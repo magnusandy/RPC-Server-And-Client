@@ -456,7 +456,7 @@ func main() {
   if connectError != nil {
     fmt.Println("Error Launching server "+ connectError.Error())
   }else{
-    fmt.Println("Server Started")
+    fmt.Println("Server Started on port " + SERVER_PORT)
   }
   //start RPC
   server := new(Server);
